@@ -5,10 +5,10 @@ FROM jrottenberg/ffmpeg:4.0-alpine AS ffmpeg
 FROM golang:1.11.5-alpine3.8 AS build
 
 # copy the source files
-COPY . /go/src/bitbucket.org/vintikzzzz/content-prober
+COPY . /go/src/github.com/webtor-io/content-prober
 
 # set workdir
-WORKDIR /go/src/bitbucket.org/vintikzzzz/content-prober/server
+WORKDIR /go/src/github.com/webtor-io/content-prober/server
 
 # enable modules
 ENV GO111MODULE=on
@@ -31,7 +31,7 @@ COPY --from=ffmpeg /usr/local /usr/local
 RUN apk add --no-cache --update libgcc libstdc++ ca-certificates libcrypto1.0 libssl1.0 libgomp expat
 
 # copy our static linked library
-COPY --from=build /go/src/bitbucket.org/vintikzzzz/content-prober/server/server .
+COPY --from=build /go/src/github.com/webtor-io/content-prober/server/server .
 
 # tell we are exposing our service on port 50051
 EXPOSE 50051
