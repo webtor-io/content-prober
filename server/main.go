@@ -90,12 +90,25 @@ func ffprobe(ctx context.Context, url string) (string, error) {
 	}
 }
 
+func sourceURL(ctx context.Context, req *pb.ProbeRequest) string {
+	if req.Url != "" {
+		return req.Url
+	}
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		return strings.Join(md["source-url"], "")
+	}
+	return ""
+}
+
 func getCacheKey(ctx context.Context, req *pb.ProbeRequest) string {
 	hasher := md5.New()
-	str := req.Url
+	str := sourceURL(ctx, req)
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
 		infoHash := strings.Join(md["info-hash"], "")
 		filePath := strings.Join(md["file-path"], "")
+		if filePath == "" {
+			filePath = strings.Join(md["path"], "")
+		}
 		if infoHash != "" && filePath != "" {
 			str = fmt.Sprintf("%s-%s", infoHash, filePath)
 		}
@@ -112,7 +125,7 @@ func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeRepl
 	output, err := s.redis.Get(cacheKey).Result()
 	if err != nil {
 		log.WithError(err).Info("Failed to fetch redis cache")
-		output, err = ffprobe(ctx, req.Url)
+		output, err = ffprobe(ctx, sourceURL(ctx, req))
 		if err != nil {
 			log.WithError(err).Info("Probing failed")
 			log.Info("Setting error cache")
@@ -121,7 +134,7 @@ func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeRepl
 			return nil, err
 		}
 		log.Info("Setting cache")
-		s.redis.Set(cacheKey, output, time.Minute*60*24)
+		s.redis.Set(cacheKey, output, time.Hour*24*7)
 	} else {
 		log.Info("Using cache")
 	}
