@@ -9,12 +9,12 @@ steps:
   args: ["push", "gcr.io/$PROJECT_ID/$REPO_NAME:$REVISION_ID"]
 - name: 'gcr.io/cloud-builders/docker'
   args: ["push", "gcr.io/$PROJECT_ID/$REPO_NAME:latest"]
-- name: 'gcr.io/cloud-builders/gcloud'
-  entrypoint: 'bash'
-  args:
-  - '-c'
-  - |
-    gcloud components install kubectl
-    gsutil cp gs://kube-key/kubeconfig .
-    export KUBECONFIG=kubeconfig
-    kubectl set image deployment/content-prober --namespace=webtor content-prober=gcr.io/$PROJECT_ID/$REPO_NAME:$REVISION_ID || exit 0
+# - name: 'gcr.io/cloud-builders/gcloud'
+#   entrypoint: 'bash'
+#   args:
+#   - '-c'
+#   - |
+#     gcloud components install kubectl
+#     gsutil cp gs://kube-key/kubeconfig .
+#     export KUBECONFIG=kubeconfig
+#     kubectl set image deployment/content-prober --namespace=webtor content-prober=gcr.io/$PROJECT_ID/$REPO_NAME:$REVISION_ID || exit 0
