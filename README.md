@@ -1,5 +1,4 @@
 # content-prober
-
 Wrapper around ffprobe with GRPC access and Redis backend
 
 ## Requirements
@@ -29,3 +28,13 @@ GLOBAL OPTIONS:
    --redis-password value, --rPASS value  redis password [$REDIS_PASS, $ REDIS_PASSWORD]
    --help, -h                             show help
    --version, -v                          print the version
+```
+## Docker image
+```
+docker pull webtor/content-prober
+```
+## Helm Chart
+```
+helm repo add webtor https://charts.webtor.io
+helm install webtor/content-prober
+```
