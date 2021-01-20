@@ -169,6 +169,7 @@ func main() {
 		cli.StringFlag{
 			Name:   "redis-host, rH",
 			Usage:  "hostname of the redis service",
+			Value:  "127.0.0.1",
 			EnvVar: "REDIS_MASTER_SERVICE_HOST, REDIS_SERVICE_HOST",
 		},
 		cli.IntFlag{
@@ -242,7 +243,7 @@ func main() {
 			log.WithError(err).Error("Got GRPC error")
 			return err
 		}
-		log.Info("Shooting down... at last!")
+		log.Info("Shutting down... at last!")
 		return nil
 	}
 	err := app.Run(os.Args)
