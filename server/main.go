@@ -63,6 +63,7 @@ func ffprobe(ctx context.Context, url string) (string, error) {
 	var bufErr bytes.Buffer
 	cmd.Stdout = &bufOut
 	cmd.Stderr = &bufErr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	err = cmd.Start()
 	if err != nil {
 		log.WithError(err).Error("Unable to start ffprobe")
@@ -73,7 +74,7 @@ func ffprobe(ctx context.Context, url string) (string, error) {
 
 	select {
 	case <-ctx.Done():
-		cmd.Process.Kill()
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		log.WithError(ctx.Err()).Error("Got context error")
 		return "", ctx.Err()
 	case err := <-done:
