@@ -1,5 +1,4 @@
 # content-prober
-
 Wrapper around ffprobe with GRPC access and Redis backend
 
 ## Requirements
@@ -23,9 +22,19 @@ COMMANDS:
 GLOBAL OPTIONS:
    --host value, -H value                 listening host
    --port value, -P value                 listening port (default: 50051)
-   --redis-host value, --rH value         hostname of the redis service [$REDIS_MASTER_SERVICE_HOST, $ REDIS_SERVICE_HOST]
+   --redis-host value, --rH value         hostname of the redis servicea (default: 127.0.0.1) [$REDIS_MASTER_SERVICE_HOST, $ REDIS_SERVICE_HOST]
    --redis-port value, --rP value         port of the redis service (default: 6379) [$REDIS_MASTER_SERVICE_PORT, $ REDIS_SERVICE_PORT]
    --redis-db value, --rDB value          redis db (default: 0) [$REDIS_DB]
    --redis-password value, --rPASS value  redis password [$REDIS_PASS, $ REDIS_PASSWORD]
    --help, -h                             show help
    --version, -v                          print the version
+```
+## Docker image
+```
+docker pull webtor/content-prober
+```
+## Helm Chart
+```
+helm repo add webtor https://charts.webtor.io
+helm install webtor/content-prober
+```
