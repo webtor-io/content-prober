@@ -6,7 +6,6 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/pkg/errors"
 
 	"github.com/go-redis/redis"
 	joonix "github.com/joonix/log"
@@ -128,7 +129,8 @@ func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeRepl
 		log.WithError(err).Info("Failed to fetch redis cache")
 		output, err = ffprobe(ctx, sourceURL(ctx, req))
 		if err != nil {
-			log.WithError(err).Info("Probing failed")
+			err = errors.Wrapf(err, "probing failed")
+			log.WithError(err).Warn("Probing failed")
 			log.Info("Setting error cache")
 			s.redis.Set(cacheKey, ErrorText+err.Error(), time.Minute*60)
 			err := status.Error(codes.Internal, err.Error())

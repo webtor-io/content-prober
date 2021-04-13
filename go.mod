@@ -7,7 +7,7 @@ require (
 	github.com/golang/protobuf v1.3.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.0.0
 	github.com/joonix/log v0.0.0-20190213172830-51a6cca1fed3
-	github.com/pkg/errors v0.8.1 // indirect
+	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.3.0
 	github.com/urfave/cli v1.20.0
 	golang.org/x/net v0.0.0-20190301231341-16b79f2e4e95

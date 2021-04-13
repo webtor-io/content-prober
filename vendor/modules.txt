@@ -35,8 +35,9 @@ github.com/grpc-ecosystem/go-grpc-middleware/tags/logrus
 github.com/joonix/log
 # github.com/konsorten/go-windows-terminal-sequences v1.0.1
 github.com/konsorten/go-windows-terminal-sequences
-# github.com/pkg/errors v0.8.1
+# github.com/pkg/errors v0.9.1
 ## explicit
+github.com/pkg/errors
 # github.com/sirupsen/logrus v1.3.0
 ## explicit
 github.com/sirupsen/logrus
