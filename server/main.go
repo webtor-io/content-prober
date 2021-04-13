@@ -130,7 +130,7 @@ func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeRepl
 		if err != nil {
 			log.WithError(err).Info("Probing failed")
 			log.Info("Setting error cache")
-			s.redis.Set(cacheKey, ErrorText, time.Minute*60)
+			s.redis.Set(cacheKey, ErrorText+err.Error(), time.Minute*60)
 			err := status.Error(codes.Internal, err.Error())
 			return nil, err
 		}
@@ -139,9 +139,10 @@ func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeRepl
 	} else {
 		log.Info("Using cache")
 	}
-	if output == ErrorText {
-		log.Info("Got cached error")
-		err := status.Error(codes.Internal, "cached error")
+	if strings.HasPrefix(output, ErrorText) {
+		inErr := strings.TrimPrefix(output, ErrorText)
+		log.Warnf("Got cached error=%v", inErr)
+		err := status.Error(codes.Internal, inErr)
 		return nil, err
 	}
 	var rep pb.ProbeReply

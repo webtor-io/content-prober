@@ -1,5 +1,5 @@
 # ffmpeg image
-FROM jrottenberg/ffmpeg:4.0-alpine AS ffmpeg
+FROM jrottenberg/ffmpeg:snapshot-alpine AS ffmpeg
 
 # golang image
 FROM golang:latest AS build
@@ -9,9 +9,6 @@ WORKDIR /app
 
 # copy the source files
 COPY . .
-
-# enable modules
-ENV GO111MODULE=on
 
 # disable crosscompiling 
 ENV CGO_ENABLED=0
