@@ -25,7 +25,7 @@ FROM alpine:latest
 COPY --from=ffmpeg /usr/local /usr/local
 
 # install additional dependencies for ffmpeg
-RUN apk add --no-cache --update libgcc libstdc++ ca-certificates libcrypto1.1 libssl1.1 libgomp expat
+RUN apk add --no-cache --update libgcc libstdc++ ca-certificates libcrypto3 libssl3 libgomp expat
 
 # copy our static linked library
 COPY --from=build /app/server/server .
