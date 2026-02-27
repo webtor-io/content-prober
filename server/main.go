@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -102,55 +103,99 @@ func sourceURL(ctx context.Context, req *pb.ProbeRequest) string {
 	return ""
 }
 
-func getCacheKey(ctx context.Context, req *pb.ProbeRequest) string {
+func buildCacheKey(sourceURL string, infoHash string, filePath string) string {
 	hasher := md5.New()
-	str := sourceURL(ctx, req)
-	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		infoHash := strings.Join(md["info-hash"], "")
-		filePath := strings.Join(md["file-path"], "")
-		if filePath == "" {
-			filePath = strings.Join(md["path"], "")
-		}
-		if infoHash != "" && filePath != "" {
-			str = fmt.Sprintf("%s-%s", infoHash, filePath)
-		}
+	str := sourceURL
+	if infoHash != "" && filePath != "" {
+		str = fmt.Sprintf("%s-%s", infoHash, filePath)
 	}
 	hasher.Write([]byte(fmt.Sprintf("%s-%s", CacheKeyPrefix, str)))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeReply, error) {
-	log := log.WithField("request", req)
-	log.Info("Got new probing request")
-	cacheKey := getCacheKey(ctx, req)
-	log = log.WithField("cacheKey", cacheKey)
+func getCacheKey(ctx context.Context, req *pb.ProbeRequest) string {
+	src := sourceURL(ctx, req)
+	var infoHash, filePath string
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		infoHash = strings.Join(md["info-hash"], "")
+		filePath = strings.Join(md["file-path"], "")
+		if filePath == "" {
+			filePath = strings.Join(md["path"], "")
+		}
+	}
+	return buildCacheKey(src, infoHash, filePath)
+}
+
+func (s *server) probeRaw(ctx context.Context, sourceURL string, infoHash string, filePath string) (string, error) {
+	cacheKey := buildCacheKey(sourceURL, infoHash, filePath)
+	l := log.WithField("cacheKey", cacheKey).WithField("sourceURL", sourceURL)
 	output, err := s.redis.Get(cacheKey).Result()
 	if err != nil {
-		log.WithError(err).Info("Failed to fetch redis cache")
-		output, err = ffprobe(ctx, sourceURL(ctx, req))
+		l.WithError(err).Info("Failed to fetch redis cache")
+		output, err = ffprobe(ctx, sourceURL)
 		if err != nil {
 			err = errors.Wrapf(err, "probing failed")
-			log.WithError(err).Warn("Probing failed")
-			log.Info("Setting error cache")
+			l.WithError(err).Warn("Probing failed")
+			l.Info("Setting error cache")
 			s.redis.Set(cacheKey, ErrorText+err.Error(), time.Minute*60)
-			err := status.Error(codes.Internal, err.Error())
-			return nil, err
+			return "", err
 		}
-		log.Info("Setting cache")
+		l.Info("Setting cache")
 		s.redis.Set(cacheKey, output, time.Hour*24*7)
 	} else {
-		log.Info("Using cache")
+		l.Info("Using cache")
 	}
 	if strings.HasPrefix(output, ErrorText) {
 		inErr := strings.TrimPrefix(output, ErrorText)
-		log.Warnf("Got cached error=%v", inErr)
-		err := status.Error(codes.Internal, inErr)
-		return nil, err
+		l.Warnf("Got cached error=%v", inErr)
+		return "", errors.New(inErr)
+	}
+	return output, nil
+}
+
+func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeReply, error) {
+	l := log.WithField("request", req)
+	l.Info("Got new probing request")
+	src := sourceURL(ctx, req)
+	var infoHash, filePath string
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		infoHash = strings.Join(md["info-hash"], "")
+		filePath = strings.Join(md["file-path"], "")
+		if filePath == "" {
+			filePath = strings.Join(md["path"], "")
+		}
+	}
+	output, err := s.probeRaw(ctx, src, infoHash, filePath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	var rep pb.ProbeReply
 	json.Unmarshal([]byte(output), &rep)
-	log.WithField("reply", rep).Info("Sending reply")
+	l.WithField("reply", rep).Info("Sending reply")
 	return &rep, nil
+}
+
+func (s *server) handleHTTPProbe(w http.ResponseWriter, r *http.Request) {
+	sourceURL := r.Header.Get("X-Source-Url")
+	if sourceURL == "" {
+		http.Error(w, "X-Source-Url header is required", http.StatusBadRequest)
+		return
+	}
+	infoHash := r.Header.Get("X-Info-Hash")
+	filePath := r.Header.Get("X-Path")
+
+	l := log.WithField("sourceURL", sourceURL).WithField("infoHash", infoHash).WithField("filePath", filePath)
+	l.Info("Got new HTTP probing request")
+
+	output, err := s.probeRaw(r.Context(), sourceURL, infoHash, filePath)
+	if err != nil {
+		l.WithError(err).Warn("HTTP probing failed")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(output))
 }
 
 func main() {
@@ -169,6 +214,18 @@ func main() {
 			Name:  "port, P",
 			Usage: "listening port",
 			Value: 50051,
+		},
+		cli.IntFlag{
+			Name:   "http-port",
+			Usage:  "HTTP listening port",
+			Value:  8080,
+			EnvVar: "HTTP_PORT",
+		},
+		cli.IntFlag{
+			Name:   "probe-port",
+			Usage:  "health probe HTTP port",
+			Value:  8081,
+			EnvVar: "PROBE_PORT",
 		},
 		cli.StringFlag{
 			Name:   "redis-host, rH",
@@ -201,10 +258,10 @@ func main() {
 		}
 		addr := fmt.Sprintf("%s:%d", c.String("host"), c.Int("port"))
 		grpcLog := log.WithFields(log.Fields{})
-		log := log.WithField("addr", addr)
+		grpcLogger := log.WithField("addr", addr)
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
-			log.WithError(err).Error("Failed to listen")
+			grpcLogger.WithError(err).Error("Failed to listen")
 			return err
 		}
 		defer l.Close()
@@ -215,9 +272,11 @@ func main() {
 		})
 		defer client.Close()
 
+		srv := &server{redis: client}
+
 		grpcError := make(chan error, 1)
 		go func() {
-			log.Info("Start listening")
+			grpcLogger.Info("Start listening gRPC")
 			alwaysLoggingDeciderServer := func(ctx context.Context, fullMethodName string, servingObject interface{}) bool { return true }
 			s := grpc.NewServer(
 				grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
@@ -233,11 +292,37 @@ func main() {
 					grpc_recovery.UnaryServerInterceptor(),
 				)),
 			)
-			pb.RegisterContentProberServer(s, &server{redis: client})
+			pb.RegisterContentProberServer(s, srv)
 			reflection.Register(s)
 			err := s.Serve(l)
 			grpcError <- err
 		}()
+
+		httpError := make(chan error, 1)
+		go func() {
+			httpAddr := fmt.Sprintf("%s:%d", c.String("host"), c.Int("http-port"))
+			log.WithField("addr", httpAddr).Info("Start listening HTTP")
+			mux := http.NewServeMux()
+			mux.HandleFunc("/", srv.handleHTTPProbe)
+			err := http.ListenAndServe(httpAddr, mux)
+			httpError <- err
+		}()
+
+		probeError := make(chan error, 1)
+		go func() {
+			probeAddr := fmt.Sprintf("%s:%d", c.String("host"), c.Int("probe-port"))
+			log.WithField("addr", probeAddr).Info("Start listening health probes")
+			mux := http.NewServeMux()
+			mux.HandleFunc("/liveness", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			mux.HandleFunc("/readiness", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			err := http.ListenAndServe(probeAddr, mux)
+			probeError <- err
+		}()
+
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 		select {
@@ -245,6 +330,12 @@ func main() {
 			log.WithField("signal", sig).Info("Got syscall")
 		case err = <-grpcError:
 			log.WithError(err).Error("Got GRPC error")
+			return err
+		case err = <-httpError:
+			log.WithError(err).Error("Got HTTP error")
+			return err
+		case err = <-probeError:
+			log.WithError(err).Error("Got probe server error")
 			return err
 		}
 		log.Info("Shutting down... at last!")
