@@ -58,9 +58,19 @@ func ffprobe(ctx context.Context, url string) (string, error) {
 		log.WithField("url", url).WithError(err).Info("Unable to parse url")
 		return "", err
 	}
-	cmdText := fmt.Sprintf("%s -show_format -show_streams -print_format json '%s'", ffprobe, parsedURL.String())
+	// -show_chapters: a container's chapter list ("Opening", "End Credits")
+	// is where a player learns when the credits begin. It costs no extra
+	// reads -- the demuxer parses chapters with the rest of the header
+	// whether or not they are printed -- and no consumer is disturbed: the
+	// HTTP endpoint hands the JSON through as it is, and the gRPC reply is
+	// unmarshalled into a struct that ignores fields it does not know.
+	// Results are cached for a week, so chapters appear for a file the next
+	// time it is actually probed; the cache is NOT bumped for this -- that
+	// would re-probe every torrent-backed source at once.
+	args := []string{"-show_format", "-show_streams", "-show_chapters", "-print_format", "json", parsedURL.String()}
+	cmdText := fmt.Sprintf("%s %s", ffprobe, strings.Join(args[:len(args)-1], " ")+" '"+parsedURL.String()+"'")
 	log.WithField("cmd", cmdText).Info("Running ffprobe command")
-	cmd := exec.Command(ffprobe, "-show_format", "-show_streams", "-print_format", "json", parsedURL.String())
+	cmd := exec.Command(ffprobe, args...)
 	var bufOut bytes.Buffer
 	var bufErr bytes.Buffer
 	cmd.Stdout = &bufOut
