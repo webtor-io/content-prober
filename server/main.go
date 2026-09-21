@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/urfave/cli"
+	cs "github.com/webtor-io/common-services"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
@@ -39,8 +40,15 @@ import (
 	grpc_ctxtags "github.com/grpc-ecosystem/go-grpc-middleware/tags"
 )
 
+// probeCache is the slice of the Redis client probeRaw uses, so that tests
+// can feed a cache hit without a Redis.
+type probeCache interface {
+	Get(key string) *redis.StringCmd
+	Set(key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+}
+
 type server struct {
-	redis *redis.Client
+	redis probeCache
 }
 
 const ErrorText = "ERROR"
@@ -142,7 +150,13 @@ func (s *server) probeRaw(ctx context.Context, sourceURL string, infoHash string
 	output, err := s.redis.Get(cacheKey).Result()
 	if err != nil {
 		l.WithError(err).Info("Failed to fetch redis cache")
+		cache := cacheMiss
+		if err != redis.Nil {
+			cache = cacheError
+		}
+		start := time.Now()
 		output, err = ffprobe(ctx, sourceURL)
+		observeProbeRun(err, cache, time.Since(start))
 		if err != nil {
 			err = errors.Wrapf(err, "probing failed")
 			l.WithError(err).Warn("Probing failed")
@@ -152,10 +166,12 @@ func (s *server) probeRaw(ctx context.Context, sourceURL string, infoHash string
 		}
 		l.Info("Setting cache")
 		s.redis.Set(cacheKey, output, time.Hour*24*7)
-	} else {
-		l.Info("Using cache")
+		return output, nil
 	}
-	if strings.HasPrefix(output, ErrorText) {
+	l.Info("Using cache")
+	cachedFailure := strings.HasPrefix(output, ErrorText)
+	observeCacheHit(cachedFailure)
+	if cachedFailure {
 		inErr := strings.TrimPrefix(output, ErrorText)
 		l.Warnf("Got cached error=%v", inErr)
 		return "", errors.New(inErr)
@@ -206,6 +222,39 @@ func (s *server) handleHTTPProbe(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(output))
+}
+
+// newGRPCServer builds the server with the full interceptor chain. Shared
+// with the tests so that what they measure is what production runs.
+func newGRPCServer(srv pb.ContentProberServer) *grpc.Server {
+	grpcLog := log.WithFields(log.Fields{})
+	alwaysLoggingDeciderServer := func(ctx context.Context, fullMethodName string, servingObject interface{}) bool { return true }
+	// The metrics interceptor is outermost so that it observes the final
+	// status, including a panic that grpc_recovery (innermost) turned into
+	// codes.Internal.
+	s := grpc.NewServer(
+		grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+			grpcMetrics.StreamServerInterceptor(),
+			grpc_ctxtags.StreamServerInterceptor(),
+			grpc_logrus.StreamServerInterceptor(grpcLog),
+			grpc_logrus.PayloadStreamServerInterceptor(grpcLog, alwaysLoggingDeciderServer),
+			grpc_recovery.StreamServerInterceptor(),
+		)),
+		grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			grpcMetrics.UnaryServerInterceptor(),
+			grpc_ctxtags.UnaryServerInterceptor(),
+			grpc_logrus.UnaryServerInterceptor(grpcLog),
+			grpc_logrus.PayloadUnaryServerInterceptor(grpcLog, alwaysLoggingDeciderServer),
+			grpc_recovery.UnaryServerInterceptor(),
+		)),
+	)
+	pb.RegisterContentProberServer(s, srv)
+	// Zero-valued series for every method, so a dashboard sees 0 instead of
+	// "no data" until the first call. Before reflection is registered, so the
+	// 17 codes x 2 reflection services are not pre-created as dead series.
+	grpcMetrics.InitializeMetrics(s)
+	reflection.Register(s)
+	return s
 }
 
 func main() {
@@ -262,12 +311,12 @@ func main() {
 			EnvVar: "REDIS_PASS, REDIS_PASSWORD",
 		},
 	}
+	app.Flags = cs.RegisterPromFlags(app.Flags)
 	app.Action = func(c *cli.Context) error {
 		if c.String("redis-host") == "" {
 			return errors.New("No redis host defined")
 		}
 		addr := fmt.Sprintf("%s:%d", c.String("host"), c.Int("port"))
-		grpcLog := log.WithFields(log.Fields{})
 		grpcLogger := log.WithField("addr", addr)
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
@@ -287,23 +336,7 @@ func main() {
 		grpcError := make(chan error, 1)
 		go func() {
 			grpcLogger.Info("Start listening gRPC")
-			alwaysLoggingDeciderServer := func(ctx context.Context, fullMethodName string, servingObject interface{}) bool { return true }
-			s := grpc.NewServer(
-				grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
-					grpc_ctxtags.StreamServerInterceptor(),
-					grpc_logrus.StreamServerInterceptor(grpcLog),
-					grpc_logrus.PayloadStreamServerInterceptor(grpcLog, alwaysLoggingDeciderServer),
-					grpc_recovery.StreamServerInterceptor(),
-				)),
-				grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
-					grpc_ctxtags.UnaryServerInterceptor(),
-					grpc_logrus.UnaryServerInterceptor(grpcLog),
-					grpc_logrus.PayloadUnaryServerInterceptor(grpcLog, alwaysLoggingDeciderServer),
-					grpc_recovery.UnaryServerInterceptor(),
-				)),
-			)
-			pb.RegisterContentProberServer(s, srv)
-			reflection.Register(s)
+			s := newGRPCServer(srv)
 			err := s.Serve(l)
 			grpcError <- err
 		}()
@@ -333,11 +366,23 @@ func main() {
 			probeError <- err
 		}()
 
+		// /metrics on 8083, scraped through the chart's ServiceMonitor
+		promError := make(chan error, 1)
+		if prom := cs.NewProm(c); prom != nil {
+			defer prom.Close()
+			go func() {
+				promError <- prom.Serve()
+			}()
+		}
+
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 		select {
 		case sig := <-sigs:
 			log.WithField("signal", sig).Info("Got syscall")
+		case err = <-promError:
+			log.WithError(err).Error("Got Prometheus server error")
+			return err
 		case err = <-grpcError:
 			log.WithError(err).Error("Got GRPC error")
 			return err
