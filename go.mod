@@ -12,8 +12,8 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli v1.22.17
 	github.com/webtor-io/common-services v0.0.0-20260323152956-4a4e97f013f7
-	golang.org/x/net v0.57.0
-	google.golang.org/grpc v1.79.1
+	golang.org/x/net v0.58.0
+	google.golang.org/grpc v1.83.2
 )
 
 require (
@@ -45,10 +45,10 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	golang.org/x/text v0.41.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	mellium.im/sasl v0.3.2 // indirect
 )
