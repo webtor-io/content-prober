@@ -258,7 +258,7 @@ func newGRPCServer(srv pb.ContentProberServer) *grpc.Server {
 }
 
 func main() {
-	log.SetFormatter(&joonix.FluentdFormatter{})
+	log.SetFormatter(redactingFormatter{&joonix.FluentdFormatter{}})
 	app := cli.NewApp()
 	app.Name = "content-prober-server"
 	app.Usage = "runs content prober"
