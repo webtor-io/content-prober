@@ -160,8 +160,14 @@ func (s *server) probeRaw(ctx context.Context, sourceURL string, infoHash string
 		if err != nil {
 			err = errors.Wrapf(err, "probing failed")
 			l.WithError(err).Warn("Probing failed")
-			l.Info("Setting error cache")
-			s.redis.Set(cacheKey, ErrorText+err.Error(), time.Minute*60)
+			// Only a failure of the file itself is worth remembering. A
+			// caller that hung up or ran out of time says nothing about the
+			// file; cached, it would answer every other caller (Watch
+			// included) "probing failed" for an hour.
+			if probeOutcome(err) == outcomeError {
+				l.Info("Setting error cache")
+				s.redis.Set(cacheKey, ErrorText+err.Error(), time.Minute*60)
+			}
 			return "", err
 		}
 		l.Info("Setting cache")
