@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -49,6 +50,19 @@ type probeCache interface {
 
 type server struct {
 	redis probeCache
+
+	mu   sync.Mutex
+	runs map[string]*probeRun // ffprobe runs in flight, by cache key
+}
+
+// probeRun is one ffprobe run of a file, shared by every request for that
+// file that arrives while it is in flight.
+type probeRun struct {
+	done    chan struct{} // closed once output and err are set
+	output  string
+	err     error
+	waiters int // requests still waiting; guarded by server.mu
+	cancel  context.CancelFunc
 }
 
 const ErrorText = "ERROR"
@@ -60,7 +74,15 @@ const CacheKeyPrefix = "content-prober"
 // limit, and the cgroup OOM killer took the server and every neighbouring
 // probe down with it. Under the cap such a file fails only its own probe,
 // with an allocation error. Ordinary probes stay near 100 MiB of address
-// space; 768 MiB leaves the rest of the pod for the server and other probes.
+// space (97-122 MiB VmPeak, 20-43 MiB RSS in a production sample).
+//
+// The cap is per process. Requests for the same file share one run per
+// replica (probeShared), but two different files that each need several
+// hundred MiB at the same moment can still add up past the pod limit.
+// ponytail: no limit on concurrent runs. One run at a time would rule that
+// out, but four fifths of ffprobe wall time is spent on sources so slow
+// that the caller gives up after 20 s or more, and every probe of the
+// replica would queue behind those; revisit if two heavy files coincide.
 const ffprobeMemoryLimitKiB = 768 * 1024
 
 func ffprobe(ctx context.Context, url string) (string, error) {
@@ -171,23 +193,13 @@ func (s *server) probeRaw(ctx context.Context, sourceURL string, infoHash string
 			cache = cacheError
 		}
 		start := time.Now()
-		output, err = ffprobe(ctx, sourceURL)
+		output, err = s.probeShared(ctx, cacheKey, sourceURL)
 		observeProbeRun(err, cache, time.Since(start))
 		if err != nil {
 			err = errors.Wrapf(err, "probing failed")
 			l.WithError(err).Warn("Probing failed")
-			// Only a failure of the file itself is worth remembering. A
-			// caller that hung up or ran out of time says nothing about the
-			// file; cached, it would answer every other caller (Watch
-			// included) "probing failed" for an hour.
-			if probeOutcome(err) == outcomeError {
-				l.Info("Setting error cache")
-				s.redis.Set(cacheKey, ErrorText+err.Error(), time.Minute*60)
-			}
 			return "", err
 		}
-		l.Info("Setting cache")
-		s.redis.Set(cacheKey, output, time.Hour*24*7)
 		return output, nil
 	}
 	l.Info("Using cache")
@@ -199,6 +211,70 @@ func (s *server) probeRaw(ctx context.Context, sourceURL string, infoHash string
 		return "", errors.New(inErr)
 	}
 	return output, nil
+}
+
+// probeShared runs ffprobe for cacheKey, or joins the run already in flight
+// for it, so that concurrent requests for one file start one ffprobe rather
+// than one each: a file that makes ffprobe allocate hundreds of MiB, asked
+// for by several callers at once, must not multiply that by the callers.
+//
+// The run outlives the request that started it and stops only when every
+// request waiting for it has gone, so one caller hanging up does not fail
+// the others. The run caches its result itself, once.
+func (s *server) probeShared(ctx context.Context, cacheKey string, sourceURL string) (string, error) {
+	s.mu.Lock()
+	r := s.runs[cacheKey]
+	if r == nil {
+		runCtx, cancel := context.WithCancel(context.Background())
+		r = &probeRun{done: make(chan struct{}), cancel: cancel}
+		if s.runs == nil {
+			s.runs = map[string]*probeRun{}
+		}
+		s.runs[cacheKey] = r
+		go func() {
+			defer cancel()
+			r.output, r.err = ffprobe(runCtx, sourceURL)
+			s.cacheRun(cacheKey, r.output, r.err)
+			s.mu.Lock()
+			if s.runs[cacheKey] == r {
+				delete(s.runs, cacheKey)
+			}
+			s.mu.Unlock()
+			close(r.done)
+		}()
+	}
+	r.waiters++
+	s.mu.Unlock()
+
+	select {
+	case <-r.done:
+		return r.output, r.err
+	case <-ctx.Done():
+		s.mu.Lock()
+		if r.waiters--; r.waiters == 0 {
+			r.cancel() // nobody wants the result any more: kill ffprobe
+		}
+		s.mu.Unlock()
+		return "", ctx.Err()
+	}
+}
+
+// cacheRun stores what one ffprobe run said about the file.
+func (s *server) cacheRun(cacheKey string, output string, err error) {
+	l := log.WithField("cacheKey", cacheKey)
+	if err != nil {
+		// Only a failure of the file itself is worth remembering. A run
+		// stopped because its callers hung up or ran out of time says
+		// nothing about the file; cached, it would answer every other
+		// caller (Watch included) "probing failed" for an hour.
+		if probeOutcome(err) == outcomeError {
+			l.Info("Setting error cache")
+			s.redis.Set(cacheKey, ErrorText+errors.Wrapf(err, "probing failed").Error(), time.Minute*60)
+		}
+		return
+	}
+	l.Info("Setting cache")
+	s.redis.Set(cacheKey, output, time.Hour*24*7)
 }
 
 func (s *server) Probe(ctx context.Context, req *pb.ProbeRequest) (*pb.ProbeReply, error) {
