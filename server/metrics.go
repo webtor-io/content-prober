@@ -46,11 +46,13 @@ var (
 		Help: "Probes served, by outcome and cache verdict. A cache hit with outcome=error is a cached failure being replayed.",
 	}, []string{"outcome", "cache"})
 
-	// Observed only for probes that actually ran ffprobe: a cache hit takes
-	// a millisecond and would swamp the buckets that describe ffprobe.
+	// Observed only for cache misses, which wait for ffprobe: a cache hit
+	// takes a millisecond and would swamp the buckets that describe ffprobe.
+	// A miss that joined a run already in flight for the same file waits
+	// only for the rest of that run.
 	probeSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "prober_probe_seconds",
-		Help:    "Wall time of an ffprobe run (cache misses only), by outcome.",
+		Help:    "Wall time a cache miss waited for ffprobe, by outcome.",
 		Buckets: []float64{0.5, 1, 2, 5, 10, 20, 30, 60},
 	}, []string{"outcome"})
 )
@@ -68,7 +70,7 @@ func init() {
 	}
 }
 
-// observeProbeRun records one ffprobe run that the cache did not spare us.
+// observeProbeRun records one cache miss and how long it waited for ffprobe.
 func observeProbeRun(err error, cache string, d time.Duration) {
 	o := probeOutcome(err)
 	probesTotal.WithLabelValues(o, cache).Inc()
