@@ -27,11 +27,12 @@ func TestFFprobeRunsUnderMemoryCap(t *testing.T) {
 		t.Errorf("ffprobe argv:\n got %q\nwant %q", got, wantArgs)
 	}
 
-	// Elsewhere the shell may refuse ulimit -v (macOS does); production is
-	// Linux, where it must stick.
-	if runtime.GOOS == "linux" {
-		if want := strconv.Itoa(ffprobeMemoryLimitKiB); lines[0] != want {
-			t.Errorf("ffprobe ulimit -v = %q, want %s", lines[0], want)
-		}
+	// Elsewhere the shell may refuse ulimit -v (macOS does), so the cap can
+	// only be checked on Linux: production, and the Test workflow in CI.
+	if runtime.GOOS != "linux" {
+		t.Skipf("cap not checked: ulimit -v does not stick on %s", runtime.GOOS)
+	}
+	if want := strconv.Itoa(ffprobeMemoryLimitKiB); lines[0] != want {
+		t.Errorf("ffprobe ulimit -v = %q, want %s", lines[0], want)
 	}
 }
