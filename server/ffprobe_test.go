@@ -11,8 +11,9 @@ import (
 // TestFFprobeRunsUnderMemoryCap: ffprobe runs with the address-space cap, and
 // the URL reaches it byte for byte even though it goes through a shell.
 func TestFFprobeRunsUnderMemoryCap(t *testing.T) {
-	// Shell metacharacters that url.URL.String() leaves as they are.
-	const url = "http://example.invalid/a'b;c&d$(id)$HOME*.mkv?x=1&y='2'"
+	// Shell metacharacters that url.URL.String() leaves as they are. The
+	// spaces (kept in the query) split the URL if "$@" loses its quotes.
+	const url = "http://example.invalid/a'b;c&d$(id)$HOME*.mkv?x=1  2&y='2'"
 	fakeFFprobe(t, `ulimit -v; printf '%s\n' "$@"`)
 
 	out, err := ffprobe(context.Background(), url)
