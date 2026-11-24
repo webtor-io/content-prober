@@ -54,6 +54,15 @@ type server struct {
 const ErrorText = "ERROR"
 const CacheKeyPrefix = "content-prober"
 
+// ffprobeMemoryLimitKiB caps the address space (ulimit -v, KiB) of every
+// ffprobe run. A crafted or broken header can make ffprobe allocate whatever
+// size it declares: one run reached ~1 GiB RSS, hit the pod's 1 GiB memory
+// limit, and the cgroup OOM killer took the server and every neighbouring
+// probe down with it. Under the cap such a file fails only its own probe,
+// with an allocation error. Ordinary probes stay near 100 MiB of address
+// space; 768 MiB leaves the rest of the pod for the server and other probes.
+const ffprobeMemoryLimitKiB = 768 * 1024
+
 func ffprobe(ctx context.Context, url string) (string, error) {
 	done := make(chan error)
 	ffprobe, err := exec.LookPath("ffprobe")
@@ -78,7 +87,14 @@ func ffprobe(ctx context.Context, url string) (string, error) {
 	args := []string{"-show_format", "-show_streams", "-show_chapters", "-print_format", "json", parsedURL.String()}
 	cmdText := fmt.Sprintf("%s %s", ffprobe, strings.Join(args[:len(args)-1], " ")+" '"+parsedURL.String()+"'")
 	log.WithField("cmd", cmdText).Info("Running ffprobe command")
-	cmd := exec.Command(ffprobe, args...)
+	// The limit is set by a shell that then execs ffprobe in its place, so it
+	// binds the child only, not the server. ffprobe and its arguments reach
+	// the shell as positional parameters ($0, $@), never as script text, so
+	// nothing in the URL is interpreted by the shell. The PID stays the same
+	// across exec, so the process-group kill below still reaches ffprobe. A
+	// shell that refuses ulimit -v still runs ffprobe, uncapped as before.
+	script := fmt.Sprintf(`ulimit -v %d; exec "$0" "$@"`, ffprobeMemoryLimitKiB)
+	cmd := exec.Command("/bin/sh", append([]string{"-c", script, ffprobe}, args...)...)
 	var bufOut bytes.Buffer
 	var bufErr bytes.Buffer
 	cmd.Stdout = &bufOut

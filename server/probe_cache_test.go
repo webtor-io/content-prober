@@ -9,14 +9,15 @@ import (
 	"time"
 )
 
-// fakeFFprobe puts an executable "ffprobe" running script on PATH.
+// fakeFFprobe puts an executable "ffprobe" running script first on PATH. The
+// rest of PATH stays, so the script can run sleep and other tools.
 func fakeFFprobe(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "ffprobe"), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // TestProbeRawCachesOnlyFileFailures: a probe the caller abandoned (cancel or
